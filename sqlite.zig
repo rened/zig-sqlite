@@ -475,7 +475,45 @@ pub const Db = struct {
     pub fn openBlob(self: *Self, db_name: Blob.DatabaseName, table: [:0]const u8, column: [:0]const u8, row: i64, comptime flags: Blob.OpenFlags) !Blob {
         return Blob.open(self.db, db_name, table, column, row, flags);
     }
+
+    pub fn savepoint(self: *Self, comptime name: []const u8) !Savepoint(name) {
+        const SavepointType = Savepoint(name);
+        return SavepointType.init(self);
+    }
 };
+
+pub fn Savepoint(comptime name: []const u8) type {
+    return struct {
+        const Self = @This();
+
+        db: *Db,
+        rolled_back: bool,
+
+        fn init(db: *Db) !Self {
+            var res = Self{
+                .db = db,
+                .rolled_back = false,
+            };
+
+            try res.db.exec("SAVEPOINT " ++ name, .{});
+
+            return res;
+        }
+
+        pub fn deinit(self: *Self) void {
+            const last_error = c.sqlite3_extended_errcode(self.db.db);
+            if (last_error == 0) {
+                self.db.exec("RELEASE SAVEPOINT " ++ name, .{}) catch |err| {
+                    std.debug.panic("release savepoint failed with error {}\n", .{err});
+                };
+            } else {
+                self.db.exec("ROLLBACK TRANSACTION TO SAVEPOINT " ++ name, .{}) catch |err| {
+                    std.debug.panic("rollback transaction to savepoint failed with error {}\n", .{err});
+                };
+            }
+        }
+    };
+}
 
 pub const QueryOptions = struct {
     /// if provided, diags will be populated in case of failures.
@@ -1926,6 +1964,121 @@ test "sqlite: diagnostics format" {
 
         testing.expectEqualStrings(tc.exp, str);
     }
+}
+
+test "sqlite: savepoint with no failures" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var db = try getTestDb();
+    try addTestData(&db);
+
+    {
+        var savepoint = try db.savepoint("outer1");
+        defer savepoint.deinit();
+
+        try db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?, ?)", .{ 1, null, true });
+
+        {
+            var savepoint2 = try db.savepoint("inner1");
+            defer savepoint2.deinit();
+
+            try db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?, ?)", .{ 2, "foobar", true });
+        }
+    }
+
+    // No failures, expect to have two rows.
+
+    var stmt = try db.prepare("SELECT data, author_id FROM article ORDER BY id ASC");
+    defer stmt.deinit();
+
+    var rows = try stmt.all(
+        struct {
+            data: []const u8,
+            author_id: usize,
+        },
+        &arena.allocator,
+        .{},
+        .{},
+    );
+
+    testing.expectEqual(@as(usize, 2), rows.len);
+    testing.expectEqual(@as(usize, 1), rows[0].author_id);
+    testing.expectEqualStrings("", rows[0].data);
+    testing.expectEqual(@as(usize, 2), rows[1].author_id);
+    testing.expectEqualStrings("foobar", rows[1].data);
+}
+
+test "sqlite: two nested savepoints with inner failure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var db = try getTestDb();
+    try addTestData(&db);
+
+    {
+        var savepoint = try db.savepoint("outer2");
+        defer savepoint.deinit();
+
+        try db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?, ?)", .{ 10, "barbaz", true });
+
+        {
+            var savepoint2 = try db.savepoint("inner2");
+            defer savepoint2.deinit();
+
+            try db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?, ?)", .{ 20, null, true });
+
+            // Explicitly fail
+            db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?)", .{ 22, null }) catch {};
+        }
+    }
+
+    // The inner transaction failed, expect to have only one row.
+
+    var stmt = try db.prepare("SELECT data, author_id FROM article");
+    defer stmt.deinit();
+
+    var rows = try stmt.all(
+        struct {
+            data: []const u8,
+            author_id: usize,
+        },
+        &arena.allocator,
+        .{},
+        .{},
+    );
+    testing.expectEqual(@as(usize, 1), rows.len);
+    testing.expectEqual(@as(usize, 10), rows[0].author_id);
+    testing.expectEqualStrings("barbaz", rows[0].data);
+}
+
+test "sqlite: two nested savepoints with outer failure" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+
+    var db = try getTestDb();
+    try addTestData(&db);
+
+    {
+        var savepoint = try db.savepoint("outer3");
+        defer savepoint.deinit();
+
+        var i: usize = 100;
+        while (i < 120) : (i += 1) {
+            try db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?, ?)", .{ i, null, true });
+        }
+
+        // Explicitly fail
+        db.exec("INSERT INTO article(author_id, data, is_published) VALUES(?, ?)", .{ 2, null }) catch {};
+    }
+
+    // The outer transaction failed, expect to have no rows.
+
+    var stmt = try db.prepare("SELECT 1 FROM article");
+    defer stmt.deinit();
+
+    var rows = try stmt.all(usize, &arena.allocator, .{}, .{});
+    testing.expectEqual(@as(usize, 0), rows.len);
 }
 
 fn getTestDb() !Db {
