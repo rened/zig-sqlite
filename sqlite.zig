@@ -476,6 +476,29 @@ pub const Db = struct {
         return Blob.open(self.db, db_name, table, column, row, flags);
     }
 
+    /// savepoint creates a transaction like BEGIN/COMMIT but they're named and can be nested.
+    /// See https://sqlite.org/lang_savepoint.html.
+    ///
+    /// The `deinit` method on the returned savepoint takes care of committing or rolling back if there's any error reported by sqlite.
+    ///
+    /// Example usage:
+    ///
+    ///     var savepoint = try db.savepoint("outer");
+    ///     defer savepoint.deinit();
+    ///
+    ///     try db.exec("INSERT INTO foo(id, name) VALUES(?, ?)", .{ 1, "foo" });
+    ///
+    ///     {
+    ///         var savepoint2 = try db.savepoint("inner");
+    ///         defer savepoint2.deinit();
+    ///
+    ///         var i: usize = 0;
+    ///         while (i < 30) : (i += 1) {
+    ///             try db.exec("INSERT INTO foo(id, name) VALUES(?, ?)", .{ 2, "bar" });
+    ///         }
+    ///     }
+    ///
+    /// In this example if any query in the inner transaction fail, all previously executed queries are discarded but the outer transaction is untouched.
     pub fn savepoint(self: *Self, comptime name: []const u8) !Savepoint(name) {
         const SavepointType = Savepoint(name);
         return SavepointType.init(self);
