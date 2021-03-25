@@ -1,6 +1,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const debug = std.debug;
+const fmt = std.fmt;
 const io = std.io;
 const mem = std.mem;
 const testing = std.testing;
@@ -197,7 +198,7 @@ pub const Diagnostics = struct {
     message: []const u8 = "",
     err: ?DetailedError = null,
 
-    pub fn format(self: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: @This(), comptime fmt_string: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
         if (self.err) |err| {
             if (self.message.len > 0) {
                 _ = try writer.print("{{message: {s}, error: {s}}}", .{ self.message, err.message });
@@ -499,44 +500,70 @@ pub const Db = struct {
     ///     }
     ///
     /// In this example if any query in the inner transaction fail, all previously executed queries are discarded but the outer transaction is untouched.
-    pub fn savepoint(self: *Self, comptime name: []const u8) !Savepoint(name) {
-        const SavepointType = Savepoint(name);
-        return SavepointType.init(self);
+    pub fn savepoint(self: *Self, name: []const u8) !Savepoint {
+        std.debug.assert(name.len < maxSavepointNameLength);
+        return Savepoint.init(self, name);
+    }
+
+    fn prepareRuntimeStatement(self: *Self, query: []const u8) RuntimeStatement {
+        return RuntimeStatement.prepare(self, query);
     }
 };
 
-pub fn Savepoint(comptime name: []const u8) type {
-    return struct {
-        const Self = @This();
+const maxSavepointNameLength = 128;
 
-        db: *Db,
-        rolled_back: bool,
+pub const Savepoint = struct {
+    const Self = @This();
 
-        fn init(db: *Db) !Self {
-            var res = Self{
-                .db = db,
-                .rolled_back = false,
-            };
+    db: *Db,
+    name: []const u8,
+    rolled_back: bool,
 
-            try res.db.exec("SAVEPOINT " ++ name, .{});
+    buf: [maxSavepointNameLength]u8,
 
-            return res;
+    fn init(db: *Db, name: []const u8) !Self {
+        var res = Self{
+            .db = db,
+            .name = name,
+            .rolled_back = false,
+            .buf = undefined,
+        };
+
+        var stmt = db.prepareRuntimeStatement(
+            res.mustPrint("SAVEPOINT {s}", .{name}),
+        );
+        stmt.step();
+        defer stmt.deinit();
+
+        return res;
+    }
+
+    pub fn deinit(self: *Self) void {
+        const last_error = c.sqlite3_extended_errcode(self.db.db);
+
+        // The following assumes bufPrint can't fail because we've asserted the name's length is < to the buffer size.
+
+        if (last_error == 0) {
+            var stmt = self.db.prepareRuntimeStatement(
+                self.mustPrint("RELEASE SAVEPOINT {s}", .{self.name}),
+            );
+            stmt.step();
+            defer stmt.deinit();
+        } else {
+            var stmt = self.db.prepareRuntimeStatement(
+                self.mustPrint("ROLLBACK TRANSACTION TO SAVEPOINT {s}", .{self.name}),
+            );
+            stmt.step();
+            defer stmt.deinit();
         }
+    }
 
-        pub fn deinit(self: *Self) void {
-            const last_error = c.sqlite3_extended_errcode(self.db.db);
-            if (last_error == 0) {
-                self.db.exec("RELEASE SAVEPOINT " ++ name, .{}) catch |err| {
-                    std.debug.panic("release savepoint failed with error {}\n", .{err});
-                };
-            } else {
-                self.db.exec("ROLLBACK TRANSACTION TO SAVEPOINT " ++ name, .{}) catch |err| {
-                    std.debug.panic("rollback transaction to savepoint failed with error {}\n", .{err});
-                };
-            }
-        }
-    };
-}
+    fn mustPrint(self: *Self, comptime format_string: []const u8, values: anytype) []const u8 {
+        return fmt.bufPrint(&self.buf, format_string, values) catch |err| {
+            std.debug.panic("unable to format string, err: {s}\n", .{err});
+        };
+    }
+};
 
 pub const QueryOptions = struct {
     /// if provided, diags will be populated in case of failures.
@@ -926,6 +953,57 @@ pub fn Iterator(comptime Type: type) type {
         }
     };
 }
+
+const RuntimeStatement = struct {
+    const Self = @This();
+
+    db: *c.sqlite3,
+    stmt: *c.sqlite3_stmt,
+
+    fn prepare(db: *Db, query: []const u8) Self {
+        var stmt = blk: {
+            var tmp: ?*c.sqlite3_stmt = undefined;
+            const result = c.sqlite3_prepare_v3(
+                db.db,
+                query.ptr,
+                @intCast(c_int, query.len),
+                0,
+                &tmp,
+                null,
+            );
+            if (result != c.SQLITE_OK) {
+                const detailed_error = getLastDetailedErrorFromDb(db.db);
+                const err = errorFromResultCode(result);
+
+                std.debug.panic("unable to prepare statement, got error {s}. detailed error: {s}\n", .{
+                    err,
+                    detailed_error.message,
+                });
+            }
+            break :blk tmp.?;
+        };
+
+        return Self{
+            .db = db.db,
+            .stmt = stmt,
+        };
+    }
+
+    fn deinit(self: *Self) void {
+        const result = c.sqlite3_finalize(self.stmt);
+        if (result != c.SQLITE_OK) {
+            logger.err("unable to finalize prepared statement, result: {}", .{result});
+        }
+    }
+
+    fn step(self: *Self) void {
+        const result = c.sqlite3_step(self.stmt);
+        switch (result) {
+            c.SQLITE_DONE => {},
+            else => std.debug.panic("invalid result {}", .{result}),
+        }
+    }
+};
 
 pub const StatementOptions = struct {};
 
