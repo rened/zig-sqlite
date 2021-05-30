@@ -525,7 +525,7 @@ pub fn Iterator(comptime Type: type) type {
         // If it returns null iterating is done.
         //
         // This cannot allocate memory. If you need to read TEXT or BLOB columns you need to use arrays or alternatively call nextAlloc.
-        pub fn next(self: *Self, options: QueryOptions) !?Type {
+        pub fn next(self: Self, options: QueryOptions) !?Type {
             var dummy_diags = Diagnostics{};
             var diags = options.diags orelse &dummy_diags;
 
@@ -569,7 +569,7 @@ pub fn Iterator(comptime Type: type) type {
         }
 
         // nextAlloc is like `next` but can allocate memory.
-        pub fn nextAlloc(self: *Self, allocator: *mem.Allocator, options: QueryOptions) !?Type {
+        pub fn nextAlloc(self: Self, allocator: *mem.Allocator, options: QueryOptions) !?Type {
             var dummy_diags = Diagnostics{};
             var diags = options.diags orelse &dummy_diags;
 
@@ -640,7 +640,7 @@ pub fn Iterator(comptime Type: type) type {
         // otherwise we have no way of communicating the end of the data to the caller.
         //
         // If the array is too small for the data an error will be returned.
-        fn readArray(self: *Self, comptime ArrayType: type, _i: usize) !ArrayType {
+        fn readArray(self: Self, comptime ArrayType: type, _i: usize) !ArrayType {
             const i = @intCast(c_int, _i);
             const type_info = @typeInfo(ArrayType);
 
@@ -675,7 +675,7 @@ pub fn Iterator(comptime Type: type) type {
         // readInt reads a sqlite INTEGER column into an integer.
         //
         // TODO remove the workaround once https://github.com/ziglang/zig/issues/5149 is resolved or if we actually return an error
-        fn readInt(self: *Self, comptime IntType: type, i: usize) error{Workaround}!IntType {
+        fn readInt(self: Self, comptime IntType: type, i: usize) error{Workaround}!IntType {
             const n = c.sqlite3_column_int64(self.stmt, @intCast(c_int, i));
             return @intCast(IntType, n);
         }
@@ -683,7 +683,7 @@ pub fn Iterator(comptime Type: type) type {
         // readFloat reads a sqlite REAL column into a float.
         //
         // TODO remove the workaround once https://github.com/ziglang/zig/issues/5149 is resolved or if we actually return an error
-        fn readFloat(self: *Self, comptime FloatType: type, i: usize) error{Workaround}!FloatType {
+        fn readFloat(self: Self, comptime FloatType: type, i: usize) error{Workaround}!FloatType {
             const d = c.sqlite3_column_double(self.stmt, @intCast(c_int, i));
             return @floatCast(FloatType, d);
         }
@@ -691,7 +691,7 @@ pub fn Iterator(comptime Type: type) type {
         // readFloat reads a sqlite INTEGER column into a bool (true is anything > 0, false is anything <= 0).
         //
         // TODO remove the workaround once https://github.com/ziglang/zig/issues/5149 is resolved or if we actually return an error
-        fn readBool(self: *Self, i: usize) error{Workaround}!bool {
+        fn readBool(self: Self, i: usize) error{Workaround}!bool {
             const d = c.sqlite3_column_int64(self.stmt, @intCast(c_int, i));
             return d > 0;
         }
@@ -730,7 +730,7 @@ pub fn Iterator(comptime Type: type) type {
         // When using .Text you can only read into either []const u8, []u8 or Text.
         //
         // The options must contain an `allocator` field which will be used to create a copy of the data.
-        fn readBytes(self: *Self, comptime BytesType: type, allocator: *mem.Allocator, _i: usize, comptime mode: ReadBytesMode) !BytesType {
+        fn readBytes(self: Self, comptime BytesType: type, allocator: *mem.Allocator, _i: usize, comptime mode: ReadBytesMode) !BytesType {
             const i = @intCast(c_int, _i);
             const type_info = @typeInfo(BytesType);
 
@@ -777,7 +777,7 @@ pub fn Iterator(comptime Type: type) type {
             }
         }
 
-        fn readPointer(self: *Self, comptime PointerType: type, allocator: *mem.Allocator, i: usize) !PointerType {
+        fn readPointer(self: Self, comptime PointerType: type, allocator: *mem.Allocator, i: usize) !PointerType {
             const type_info = @typeInfo(PointerType);
 
             var ret: PointerType = undefined;
@@ -803,7 +803,7 @@ pub fn Iterator(comptime Type: type) type {
             return ret;
         }
 
-        fn readOptional(self: *Self, comptime OptionalType: type, options: anytype, _i: usize) !OptionalType {
+        fn readOptional(self: Self, comptime OptionalType: type, options: anytype, _i: usize) !OptionalType {
             const i = @intCast(c_int, _i);
             const type_info = @typeInfo(OptionalType);
 
@@ -847,7 +847,7 @@ pub fn Iterator(comptime Type: type) type {
         // that the order is correct.
         //
         // TODO(vincent): add comptime checks for the fields/columns.
-        fn readStruct(self: *Self, options: anytype) !Type {
+        fn readStruct(self: Self, options: anytype) !Type {
             var value: Type = undefined;
 
             inline for (@typeInfo(Type).Struct.fields) |field, _i| {
@@ -861,7 +861,7 @@ pub fn Iterator(comptime Type: type) type {
             return value;
         }
 
-        fn readField(self: *Self, comptime FieldType: type, i: usize, options: anytype) !FieldType {
+        fn readField(self: Self, comptime FieldType: type, i: usize, options: anytype) !FieldType {
             const field_type_info = @typeInfo(FieldType);
 
             return switch (FieldType) {
@@ -992,7 +992,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         ///   }
         ///
         /// The types are checked at comptime.
-        fn bind(self: *Self, values: anytype) void {
+        fn bind(self: Self, values: anytype) void {
             const StructType = @TypeOf(values);
             const StructTypeInfo = @typeInfo(StructType).Struct;
 
@@ -1015,7 +1015,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
             }
         }
 
-        fn bindField(self: *Self, comptime FieldType: type, comptime field_name: []const u8, i: c_int, field: FieldType) void {
+        fn bindField(self: Self, comptime FieldType: type, comptime field_name: []const u8, i: c_int, field: FieldType) void {
             const field_type_info = @typeInfo(FieldType);
             const column = i + 1;
 
@@ -1063,7 +1063,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         /// The `values` variable is used for the bind parameters. It must have as many fields as there are bind markers
         /// in the input query string.
         ///
-        pub fn exec(self: *Self, values: anytype) !void {
+        pub fn exec(self: Self, values: anytype) !void {
             self.bind(values);
 
             const result = c.sqlite3_step(self.stmt);
@@ -1092,7 +1092,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         /// in the input query string.
         ///
         /// The iterator _must not_ outlive the statement.
-        pub fn iterator(self: *Self, comptime Type: type, values: anytype) !Iterator(Type) {
+        pub fn iterator(self: Self, comptime Type: type, values: anytype) !Iterator(Type) {
             self.bind(values);
 
             var res: Iterator(Type) = undefined;
@@ -1127,7 +1127,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         /// in the input query string.
         ///
         /// This cannot allocate memory. If you need to read TEXT or BLOB columns you need to use arrays or alternatively call `oneAlloc`.
-        pub fn one(self: *Self, comptime Type: type, options: anytype, values: anytype) !?Type {
+        pub fn one(self: Self, comptime Type: type, options: anytype, values: anytype) !?Type {
             if (!comptime std.meta.trait.is(.Struct)(@TypeOf(options))) {
                 @compileError("options passed to iterator must be a struct");
             }
@@ -1139,7 +1139,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         }
 
         /// oneAlloc is like `one` but can allocate memory.
-        pub fn oneAlloc(self: *Self, comptime Type: type, allocator: *mem.Allocator, options: anytype, values: anytype) !?Type {
+        pub fn oneAlloc(self: Self, comptime Type: type, allocator: *mem.Allocator, options: anytype, values: anytype) !?Type {
             if (!comptime std.meta.trait.is(.Struct)(@TypeOf(options))) {
                 @compileError("options passed to iterator must be a struct");
             }
@@ -1176,7 +1176,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: ParsedQuery) t
         /// in the input query string.
         ///
         /// Note that this allocates all rows into a single slice: if you read a lot of data this can use a lot of memory.
-        pub fn all(self: *Self, comptime Type: type, allocator: *mem.Allocator, options: anytype, values: anytype) ![]Type {
+        pub fn all(self: Self, comptime Type: type, allocator: *mem.Allocator, options: anytype, values: anytype) ![]Type {
             if (!comptime std.meta.trait.is(.Struct)(@TypeOf(options))) {
                 @compileError("options passed to iterator must be a struct");
             }
