@@ -121,6 +121,12 @@ const all_test_targets = switch (std.Target.current.cpu.arch) {
                 },
                 .bundled = true,
             },
+            TestTarget{
+                .target = .{
+                    .cpu_arch = .i386,
+                },
+                .bundled = true,
+            },
         },
         else => [_]TestTarget{
             TestTarget{
