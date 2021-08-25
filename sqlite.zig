@@ -5,7 +5,7 @@ const io = std.io;
 const mem = std.mem;
 const testing = std.testing;
 
-const c = @cImport({
+pub const c = @cImport({
     @cInclude("sqlite3.h");
 });
 
