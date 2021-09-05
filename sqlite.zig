@@ -264,7 +264,7 @@ fn getDetailedErrorFromResultCode(code: c_int) DetailedError {
     };
 }
 
-fn getLastDetailedErrorFromDb(db: *c.sqlite3) DetailedError {
+pub fn getLastDetailedErrorFromDb(db: *c.sqlite3) DetailedError {
     return .{
         .code = @intCast(usize, c.sqlite3_extended_errcode(db)),
         .message = blk: {
@@ -733,7 +733,7 @@ pub fn Iterator(comptime Type: type) type {
             return d > 0;
         }
 
-        const ReadBytesMode = enum {
+        pub const ReadBytesMode = enum {
             Blob,
             Text,
         };
@@ -767,7 +767,7 @@ pub fn Iterator(comptime Type: type) type {
         // When using .Text you can only read into either []const u8, []u8 or Text.
         //
         // The options must contain an `allocator` field which will be used to create a copy of the data.
-        fn readBytes(self: *Self, comptime BytesType: type, allocator: *mem.Allocator, _i: usize, comptime mode: ReadBytesMode) !BytesType {
+        pub fn readBytes(self: *Self, comptime BytesType: type, allocator: *mem.Allocator, _i: usize, comptime mode: ReadBytesMode) !BytesType {
             const i = @intCast(c_int, _i);
 
             switch (mode) {
