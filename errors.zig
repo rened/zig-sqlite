@@ -1,8 +1,8 @@
 const std = @import("std");
+const mem = std.mem;
 
-const c = @cImport({
-    @cInclude("sqlite3.h");
-});
+const c = @import("c.zig").c;
+const versionGreaterThanOrEqualTo = @import("c.zig").versionGreaterThanOrEqualTo;
 
 pub const SQLiteExtendedIOError = error{
     SQLiteIOErrRead,
@@ -129,11 +129,19 @@ pub const Error = SQLiteError ||
     SQLiteExtendedConstraintError;
 
 pub fn errorFromResultCode(code: c_int) Error {
-    // TODO(vincent): can we do something with comptime here ?
-    // The version number is always static and defined by sqlite.
+    // These errors are only available since 3.22.0.
+    if (comptime versionGreaterThanOrEqualTo(3, 22, 0)) {
+        switch (code) {
+            c.SQLITE_ERROR_MISSING_COLLSEQ => return error.SQLiteErrorMissingCollSeq,
+            c.SQLITE_ERROR_RETRY => return error.SQLiteErrorRetry,
+            c.SQLITE_READONLY_CANTINIT => return error.SQLiteReadOnlyCantInit,
+            c.SQLITE_READONLY_DIRECTORY => return error.SQLiteReadOnlyDirectory,
+            else => {},
+        }
+    }
 
     // These errors are only available since 3.25.0.
-    if (c.SQLITE_VERSION_NUMBER >= 3025000) {
+    if (comptime versionGreaterThanOrEqualTo(3, 25, 0)) {
         switch (code) {
             c.SQLITE_ERROR_SNAPSHOT => return error.SQLiteErrorSnapshot,
             c.SQLITE_LOCKED_VTAB => return error.SQLiteLockedVTab,
@@ -143,7 +151,7 @@ pub fn errorFromResultCode(code: c_int) Error {
         }
     }
     // These errors are only available since 3.31.0.
-    if (c.SQLITE_VERSION_NUMBER >= 3031000) {
+    if (comptime versionGreaterThanOrEqualTo(3, 31, 0)) {
         switch (code) {
             c.SQLITE_CANTOPEN_SYMLINK => return error.SQLiteCantOpenSymlink,
             c.SQLITE_CONSTRAINT_PINNED => return error.SQLiteConstraintPinned,
@@ -151,7 +159,7 @@ pub fn errorFromResultCode(code: c_int) Error {
         }
     }
     // These errors are only available since 3.32.0.
-    if (c.SQLITE_VERSION_NUMBER >= 3032000) {
+    if (comptime versionGreaterThanOrEqualTo(3, 32, 0)) {
         switch (code) {
             c.SQLITE_IOERR_DATA => return error.SQLiteIOErrData, // See https://sqlite.org/cksumvfs.html
             c.SQLITE_BUSY_TIMEOUT => return error.SQLiteBusyTimeout,
@@ -160,7 +168,7 @@ pub fn errorFromResultCode(code: c_int) Error {
         }
     }
     // These errors are only available since 3.34.0.
-    if (c.SQLITE_VERSION_NUMBER >= 3034000) {
+    if (comptime versionGreaterThanOrEqualTo(3, 34, 0)) {
         switch (code) {
             c.SQLITE_IOERR_CORRUPTFS => return error.SQLiteIOErrCorruptFS,
             else => {},
@@ -195,9 +203,6 @@ pub fn errorFromResultCode(code: c_int) Error {
         c.SQLITE_NOTADB => return error.SQLiteNotADatabase,
         c.SQLITE_NOTICE => return error.SQLiteNotice,
         c.SQLITE_WARNING => return error.SQLiteWarning,
-
-        c.SQLITE_ERROR_MISSING_COLLSEQ => return error.SQLiteErrorMissingCollSeq,
-        c.SQLITE_ERROR_RETRY => return error.SQLiteErrorRetry,
 
         c.SQLITE_IOERR_READ => return error.SQLiteIOErrRead,
         c.SQLITE_IOERR_SHORT_READ => return error.SQLiteIOErrShortRead,
@@ -247,8 +252,6 @@ pub fn errorFromResultCode(code: c_int) Error {
         c.SQLITE_READONLY_CANTLOCK => return error.SQLiteReadOnlyCantLock,
         c.SQLITE_READONLY_ROLLBACK => return error.SQLiteReadOnlyRollback,
         c.SQLITE_READONLY_DBMOVED => return error.SQLiteReadOnlyDBMoved,
-        c.SQLITE_READONLY_CANTINIT => return error.SQLiteReadOnlyCantInit,
-        c.SQLITE_READONLY_DIRECTORY => return error.SQLiteReadOnlyDirectory,
 
         c.SQLITE_ABORT_ROLLBACK => return error.SQLiteAbortRollback,
 
@@ -265,4 +268,47 @@ pub fn errorFromResultCode(code: c_int) Error {
 
         else => std.debug.panic("invalid result code {}", .{code}),
     }
+}
+
+/// DetailedError contains a SQLite error code and error message.
+pub const DetailedError = struct {
+    code: usize,
+    near: i32,
+    message: []const u8,
+
+    pub fn format(self: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+        _ = fmt;
+        _ = options;
+
+        _ = try writer.print("{{code: {}, near: {d}, message: {s}}}", .{ self.code, self.near, self.message });
+    }
+};
+
+pub fn getDetailedErrorFromResultCode(code: c_int) DetailedError {
+    return .{
+        .code = @intCast(usize, code),
+        .near = -1,
+        .message = blk: {
+            const msg = c.sqlite3_errstr(code);
+            break :blk mem.sliceTo(msg, 0);
+        },
+    };
+}
+
+pub fn getErrorOffset(db: *c.sqlite3) i32 {
+    if (comptime versionGreaterThanOrEqualTo(3, 38, 0)) {
+        return c.sqlite3_error_offset(db);
+    }
+    return -1;
+}
+
+pub fn getLastDetailedErrorFromDb(db: *c.sqlite3) DetailedError {
+    return .{
+        .code = @intCast(usize, c.sqlite3_extended_errcode(db)),
+        .near = getErrorOffset(db),
+        .message = blk: {
+            const msg = c.sqlite3_errmsg(db);
+            break :blk mem.sliceTo(msg, 0);
+        },
+    };
 }

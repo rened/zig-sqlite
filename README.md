@@ -8,6 +8,48 @@ While the core functionality works right now, the API is still subject to change
 
 If you use this library, expect to have to make changes when you update the code.
 
+# Zig release support
+
+`zig-sqlite` only supports Zig master (as can be found [here](https://ziglang.org/download/)). The plan is to support releases once Zig 1.0 is released but this can still change.
+
+The Zig self-hosted/stage2 compiler is now [the default](https://github.com/ziglang/zig/pull/12368) however currently it can't be used with `zig-sqlite` due to bugs.
+
+Eventually `zig-sqlite` will only support stage2 but until a point I feel comfortable doing that, the `master` branch will stay compatible with stage1 and all work for stage2 will happen in the `stage2` branch.
+
+# Table of contents
+
+* [Status](#status)
+* [Requirements](#requirements)
+* [Features](#features)
+* [Installation](#installation)
+   * [zigmod](#zigmod)
+   * [Git submodule](#git-submodule)
+   * [Using the system sqlite library](#using-the-system-sqlite-library)
+   * [Using the bundled sqlite source code file](#using-the-bundled-sqlite-source-code-file)
+* [Usage](#usage)
+   * [Initialization](#initialization)
+   * [Preparing a statement](#preparing-a-statement)
+      * [Common use](#common-use)
+      * [Diagnostics](#diagnostics)
+   * [Executing a statement](#executing-a-statement)
+   * [Reuse a statement](#reuse-a-statement)
+   * [Reading data](#reading-data)
+      * [Type parameter](#type-parameter)
+      * [Non allocating](#non-allocating)
+      * [Allocating](#allocating)
+   * [Iterating](#iterating)
+      * [Non allocating](#non-allocating-1)
+      * [Allocating](#allocating-1)
+   * [Bind parameters and resultset rows](#bind-parameters-and-resultset-rows)
+   * [Custom type binding and reading](#custom-type-binding-and-reading)
+   * [Note about complex allocations](#note-about-complex-allocations)
+* [Comptime checks](#comptime-checks)
+   * [Check the number of bind parameters.](#check-the-number-of-bind-parameters)
+   * [Assign types to bind markers and check them.](#assign-types-to-bind-markers-and-check-them)
+* [User defined SQL functions](#user-defined-sql-functions)
+   * [Scalar functions](#scalar-functions)
+   * [Aggregate functions](#aggregate-functions)
+
 # Requirements
 
 [Zig master](https://ziglang.org/download/) is the only required dependency.
@@ -22,6 +64,7 @@ For sqlite, you have options depending on your target:
 
 * Preparing, executing statements
 * comptime checked bind parameters
+* user defined SQL functions
 
 # Installation
 
@@ -73,18 +116,17 @@ If you want to use the bundled sqlite source code file, first you need to add it
 ```zig
 const sqlite = b.addStaticLibrary("sqlite", null);
 sqlite.addCSourceFile("third_party/zig-sqlite/c/sqlite3.c", &[_][]const u8{"-std=c99"});
-sqlite.addIncludeDir("third_party/zig-sqlite/c");
 sqlite.linkLibC();
 ```
 
-If you need to define custom [compime-time options](https://www.sqlite.org/compile.html#overview) for sqlite, modify the flags (second argument to `addCSourceFile`).
+If you need to define custom [compile-time options](https://www.sqlite.org/compile.html#overview) for sqlite, modify the flags (second argument to `addCSourceFile`).
 
 Now it's just a matter of linking your `build.zig` target(s) to this library instead of the system one:
 
 ```zig
-exe.linkLibC();
 exe.linkLibrary(sqlite);
-exe.addPackage(.{ .name = "sqlite", .path = "third_party/zig-sqlite/sqlite.zig" });
+exe.addPackagePath("sqlite", "third_party/zig-sqlite/sqlite.zig");
+exe.addIncludeDir("third_party/zig-sqlite/c");
 ```
 
 If you're building with glibc you must make sure that the version used is at least 2.28.
@@ -152,7 +194,7 @@ If you want failure diagnostics you can use `prepareWithDiags` like this:
 ```zig
 var diags = sqlite.Diagnostics{};
 var stmt = db.prepareWithDiags(query, .{ .diags = &diags }) catch |err| {
-    std.log.err("unable to prepare statement, got error {s}. diagnostics: {s}", .{ err, diags });
+    std.log.err("unable to prepare statement, got error {}. diagnostics: {s}", .{ err, diags });
     return err;
 };
 defer stmt.deinit();
@@ -361,7 +403,7 @@ while (true) {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
 
-    const name = (try iter.nextAlloc(&arena.allocator, .{})) orelse break;
+    const name = (try iter.nextAlloc(arena.allocator(), .{})) orelse break;
     std.debug.print("name: {}\n", .{name});
 }
 ```
@@ -388,6 +430,73 @@ Here are the rules for resultset rows:
 * `NULL` can be read into any optional.
 
 Note that arrays must have a sentinel because we need a way to communicate where the data actually stops in the array, so for example use `[200:0]u8` for a `TEXT` field.
+
+## Custom type binding and reading
+
+Sometimes the default field binding or reading logic is not what you want, for example if you want to store an enum using its tag name instead of its integer value or
+if you want to store a byte slice as an hex string.
+
+To accomplish this you must first define a wrapper struct for your type. For example if your type is a `[4]u8` and you want to treat it as an integer:
+```zig
+pub const MyArray = struct {
+    data: [4]u8,
+
+    pub const BaseType = u32;
+
+    pub fn bindField(self: MyArray, _: std.mem.Allocator) !BaseType {
+        return std.mem.readIntNative(BaseType, &self.data);
+    }
+
+    pub fn readField(_: std.mem.Allocator, value: BaseType) !MyArray {
+        var arr: MyArray = undefined;
+        std.mem.writeIntNative(BaseType, &arr.data, value);
+        return arr;
+    }
+};
+```
+
+Now when you bind a value of type `MyArray` the value returned by `bindField` will be used for binding instead.
+
+Same for reading, when you select _into_ a `MyArray` row or field the value returned by `readField` will be used instead.
+
+_NOTE_: when you _do_ allocate in `bindField` or `readField` make sure to pass a `std.heap.ArenaAllocator`-based allocator.
+
+The binding or reading code does not keep tracking of allocations made in custom types so it can't free the allocated data itself; it's therefore required
+to use an arena to prevent memory leaks.
+
+## Note about complex allocations
+
+Depending on your queries and types there can be a lot of allocations required. Take the following example:
+```zig
+const User = struct {
+    id: usize,
+    first_name: []const u8,
+    last_name: []const u8,
+    data: []const u8,
+};
+
+fn fetchUsers(allocator: std.mem.Allocator, db: *sqlite.Db) ![]User {
+    var stmt = try db.prepare("SELECT id FROM user WHERE id > $id");
+    defer stmt.deinit();
+
+    return stmt.all(User, allocator, .{}, .{ .id = 20 });
+}
+```
+
+This will do multiple allocations:
+* one for each id field in the `User` type
+* one for the resulting slice
+
+To facilitate memory handling, consider using an arena allocator like this:
+```zig
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+
+const users = try fetchUsers(arena.allocator(), db);
+_ = users;
+```
+
+This is especially recommended if you use custom types that allocate memory since, as noted above, it's necessary to prevent memory leaks.
 
 # Comptime checks
 
@@ -503,3 +612,70 @@ const rows = try stmt.all(usize, .{}, .{
 });
 _ = rows;
 ```
+
+# User defined SQL functions
+
+sqlite supports [user-defined SQL functions](https://www.sqlite.org/c3ref/create_function.html) which come in two types:
+* scalar functions
+* aggregate functions
+
+In both cases the arguments are [sqlite3\_values](https://www.sqlite.org/c3ref/value_blob.html) and are converted to Zig values using the following rules:
+* `TEXT` values can be either `sqlite.Text` or `[]const u8`
+* `BLOB` values can be either `sqlite.Blob` or `[]const u8`
+* `INTEGER` values can be any Zig integer
+* `REAL` values can be any Zig float
+
+## Scalar functions
+
+You can define a scalar function using `db.createScalarFunction`:
+```zig
+try db.createScalarFunction(
+    "blake3",
+    struct {
+        fn run(input: []const u8) [std.crypto.hash.Blake3.digest_length]u8 {
+            var hash: [std.crypto.hash.Blake3.digest_length]u8 = undefined;
+            std.crypto.hash.Blake3.hash(input, &hash, .{});
+            return hash;
+        }
+    }.run,
+    .{},
+);
+
+const hash = try db.one([std.crypto.hash.Blake3.digest_length]u8, "SELECT blake3('hello')", .{}, .{});
+```
+
+Each input arguments in the function call in the statement is passed on to the registered `run` function.
+
+## Aggregate functions
+
+You can define a scalar function using `db.createAggregateFunction`:
+```zig
+const MyContext = struct {
+    sum: u32,
+};
+var my_ctx = MyContext{ .sum = 0 };
+
+try db.createAggregateFunction(
+    "mySum",
+    &my_ctx,
+    struct {
+        fn step(ctx: *MyContext, input: u32) void {
+            ctx.sum += input;
+        }
+    }.step,
+    struct {
+        fn finalize(ctx: *MyContext) u32 {
+            return ctx.sum;
+        }
+    }.finalize,
+    .{},
+);
+
+const result = try db.one(usize, "SELECT mySum(nb) FROM foobar", .{}, .{});
+```
+
+Each input arguments in the function call in the statement is passed on to the registered `step` function.
+The `finalize` function is called once at the end.
+
+The context (2nd argument of `createAggregateFunction`) can be whatever you want; both `step` and `finalize` function must
+have their first argument of the same type as the context.

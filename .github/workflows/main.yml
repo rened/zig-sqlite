@@ -1,19 +1,17 @@
 name: CI
 
 on:
+  create:
   push:
-    paths:
-    - '**.zig'
-    - '**.c'
-    - '**.h'
+    branches: master
   pull_request:
-    paths:
-    - '**.zig'
-    - '**.c'
-    - '**.h'
   schedule:
     - cron: "0 13 * * *"
   workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   lint:
@@ -29,7 +27,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-18.04, ubuntu-latest, ubuntu-22.04, macos-latest, macos-12]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v2
@@ -38,6 +36,15 @@ jobs:
       - uses: goto-bus-stop/setup-zig@v1
         with:
           version: master
+
+      - uses: actions/cache@v3
+        if: ${{ matrix.os != 'windows-latest' }}
+        with:
+          path: |
+            zig-cache
+            ~/.cache/zig
+          key: ${{ runner.os }}-${{ matrix.os }}-zig-${{ github.sha }}
+          restore-keys: ${{ runner.os }}-${{ matrix.os }}-zig-
 
       - name: Run Tests in memory
         run: zig build test -Din_memory=true
