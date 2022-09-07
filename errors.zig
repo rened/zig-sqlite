@@ -296,9 +296,10 @@ pub fn getDetailedErrorFromResultCode(code: c_int) DetailedError {
 }
 
 pub fn getErrorOffset(db: *c.sqlite3) i32 {
-    if (comptime versionGreaterThanOrEqualTo(3, 38, 0)) {
-        return c.sqlite3_error_offset(db);
-    }
+    _ = db;
+    // if (comptime versionGreaterThanOrEqualTo(3, 38, 0)) {
+    //     return c.sqlite3_error_offset(db);
+    // }
     return -1;
 }
 

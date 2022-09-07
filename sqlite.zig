@@ -16,7 +16,7 @@ const errors = @import("errors.zig");
 pub const errorFromResultCode = errors.errorFromResultCode;
 pub const Error = errors.Error;
 pub const DetailedError = errors.DetailedError;
-const getLastDetailedErrorFromDb = errors.getLastDetailedErrorFromDb;
+pub const getLastDetailedErrorFromDb = errors.getLastDetailedErrorFromDb;
 const getDetailedErrorFromResultCode = errors.getDetailedErrorFromResultCode;
 
 const logger = std.log.scoped(.sqlite);
