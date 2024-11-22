@@ -14,7 +14,7 @@ const BindMarker = struct {
 };
 
 fn isNamedIdentifierChar(c: u8) bool {
-    return std.ascii.isAlpha(c) or std.ascii.isDigit(c) or c == '_';
+    return std.ascii.isAlphabetic(c) or std.ascii.isDigit(c) or c == '_';
 }
 
 pub fn ParsedQuery(comptime query: []const u8) ParsedQueryState(query.len) {
@@ -149,7 +149,7 @@ pub fn ParsedQuery(comptime query: []const u8) ParsedQueryState(query.len) {
         .query_len = pos,
     };
 
-    std.mem.copy(u8, &parsed_state.query, &buf);
+    std.mem.copyForwards(u8, &parsed_state.query, &buf);
 
     return parsed_state;
 }
@@ -276,7 +276,7 @@ test "parsed query: bind markers types" {
 
         inline for (testCases) |tc| {
             @setEvalBranchQuota(100000);
-            comptime var parsed_query = ParsedQuery(tc.query);
+            const parsed_query = comptime ParsedQuery(tc.query);
 
             try testing.expectEqual(1, parsed_query.nb_bind_markers);
 
@@ -324,7 +324,7 @@ test "parsed query: bind markers identifier" {
     };
 
     inline for (testCases) |tc| {
-        comptime var parsed_query = ParsedQuery(tc.query);
+        const parsed_query = comptime ParsedQuery(tc.query);
 
         try testing.expectEqual(@as(usize, 1), parsed_query.nb_bind_markers);
 
