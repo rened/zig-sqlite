@@ -603,7 +603,7 @@ pub const Db = struct {
                     else => @compileError("cannot use a result of type " ++ @typeName(ResultType)),
                 },
                 .Pointer => |ptr| switch (ptr.size) {
-                    .Slice => switch (ptr.child) {
+                    .slice => switch (ptr.child) {
                         u8 => c.sqlite3_result_text(ctx, result.ptr, @as(c_int, @intCast(result.len)), c.SQLITE_TRANSIENT),
                         else => @compileError("cannot use a result of type " ++ @typeName(ResultType)),
                     },
@@ -640,7 +640,7 @@ pub const Db = struct {
                     arg.* = value > 0;
                 },
                 .Pointer => |ptr| switch (ptr.size) {
-                    .Slice => switch (ptr.child) {
+                    .slice => switch (ptr.child) {
                         u8 => arg.* = sliceFromValue(sqlite_value),
                         else => @compileError("cannot use an argument of type " ++ @typeName(ArgType)),
                     },
@@ -910,7 +910,7 @@ pub const FunctionContext = struct {
     fn splitPtrTypes(comptime Type: type) SplitPtrTypes {
         switch (@typeInfo(Type)) {
             .Pointer => |ptr_info| switch (ptr_info.size) {
-                .One => return SplitPtrTypes{
+                .one => return SplitPtrTypes{
                     .ValueType = ptr_info.child,
                     .PointerType = Type,
                 },
@@ -1300,7 +1300,7 @@ pub fn Iterator(comptime Type: type) type {
         fn dupeWithSentinel(comptime SliceType: type, allocator: mem.Allocator, data: []const u8) !SliceType {
             switch (@typeInfo(SliceType)) {
                 .pointer => |ptr_info| {
-                    if (ptr_info.sentinel) |sentinel_ptr| {
+                    if (ptr_info.sentinel()) |sentinel_ptr| {
                         const sentinel = @as(*const ptr_info.child, @ptrCast(sentinel_ptr)).*;
 
                         const slice = try allocator.alloc(u8, data.len + 1);
@@ -1381,13 +1381,13 @@ pub fn Iterator(comptime Type: type) type {
             switch (@typeInfo(PointerType)) {
                 .pointer => |ptr| {
                     switch (ptr.size) {
-                        .One => {
+                        .one => {
                             ret = try options.allocator.create(ptr.child);
                             errdefer options.allocator.destroy(ret);
 
                             ret.* = try self.readField(ptr.child, options, i);
                         },
-                        .Slice => switch (ptr.child) {
+                        .slice => switch (ptr.child) {
                             u8 => ret = try self.readBytes(PointerType, options.allocator, i, .Text),
                             else => @compileError("cannot read pointer of type " ++ @typeName(PointerType)),
                         },
@@ -1598,7 +1598,7 @@ pub const DynamicStatement = struct {
                 @as(c_int, @intCast(query.len)),
                 flags,
                 &tmp,
-                options.sql_tail_ptr,
+                @as([*c][*c]const u8, @ptrCast(options.sql_tail_ptr)),
             );
             if (result != c.SQLITE_OK) {
                 diags.err = getLastDetailedErrorFromDb(db.db);
@@ -1682,10 +1682,10 @@ pub const DynamicStatement = struct {
                     return convertResultToError(result);
                 },
                 .pointer => |ptr| switch (ptr.size) {
-                    .One => {
+                    .one => {
                         try self.bindField(ptr.child, options, field_name, i, field.*);
                     },
-                    .Slice => switch (ptr.child) {
+                    .slice => switch (ptr.child) {
                         u8 => {
                             const result = c.sqlite3_bind_text(self.stmt, column, field.ptr, @as(c_int, @intCast(field.len)), null);
                             return convertResultToError(result);
@@ -1803,7 +1803,7 @@ pub const DynamicStatement = struct {
             },
             .pointer => |PointerTypeInfo| {
                 switch (PointerTypeInfo.size) {
-                    .Slice => {
+                    .slice => {
                         for (values, 0..) |value_to_bind, index| {
                             try self.bindField(PointerTypeInfo.child, options, "unknown", @as(c_int, @intCast(index)), value_to_bind);
                         }
