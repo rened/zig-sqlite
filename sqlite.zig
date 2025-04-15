@@ -183,7 +183,7 @@ pub const Blob = struct {
             column,
             row,
             open_flags,
-            @as([*c]?*c.sqlite3_blob,@ptrCast(&blob.handle)),
+            @as([*c]?*c.sqlite3_blob, @ptrCast(&blob.handle)),
         );
         if (result == c.SQLITE_MISUSE) debug.panic("sqlite misuse while opening a blob", .{});
         if (result != c.SQLITE_OK) {
@@ -884,7 +884,7 @@ pub const FunctionContext = struct {
         if (c.sqlite3_user_data(self.ctx)) |value| {
             return @as(
                 Types.PointerType,
-                @ptrCast(@as(@alignOf(Types.ValueType),  @alignCast(value))),
+                @ptrCast(@as(@alignOf(Types.ValueType), @alignCast(value))),
             );
         }
         return null;
@@ -896,7 +896,7 @@ pub const FunctionContext = struct {
         if (c.sqlite3_aggregate_context(self.ctx, @sizeOf(Types.ValueType))) |value| {
             return @as(
                 Types.PointerType,
-                @ptrCast(@as(@alignOf(Types.ValueType),  @alignCast(value)) ),
+                @ptrCast(@as(@alignOf(Types.ValueType), @alignCast(value))),
             );
         }
         return null;
@@ -1409,7 +1409,7 @@ pub fn Iterator(comptime Type: type) type {
 
             var ret: OptionalType = undefined;
             switch (@typeInfo(OptionalType)) {
-                .Optional => |opt| {
+                .optional => |opt| {
                     // Easy way to know if the column represents a null value.
                     const value = c.sqlite3_column_value(self.stmt, @as(c_int, @intCast(_i)));
                     const datatype = c.sqlite3_value_type(value);
@@ -1454,7 +1454,7 @@ pub fn Iterator(comptime Type: type) type {
 
             switch (@typeInfo(@TypeOf(options))) {
                 .@"struct" => {},
-                else =>     @compileError("options passed to readStruct must be a struct"),
+                else => @compileError("options passed to readStruct must be a struct"),
             }
 
             var value: Type = undefined;
@@ -1476,8 +1476,7 @@ pub fn Iterator(comptime Type: type) type {
             // }
             switch (@typeInfo(@TypeOf(options))) {
                 .@"struct" => {},
-                else =>@compileError("options passed to readField must be a struct"),
-
+                else => @compileError("options passed to readField must be a struct"),
             }
 
             const field_type_info = @typeInfo(FieldType);
@@ -2087,9 +2086,7 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: anytype) type 
 
             switch (@typeInfo(@TypeOf(values))) {
                 .@"struct" => {},
-                else =>
-                @compileError("options passed to Statement.bind must be a struct (DynamicStatement supports runtime slices)"),
-            
+                else => @compileError("options passed to Statement.bind must be a struct (DynamicStatement supports runtime slices)"),
             }
 
             const StructTypeInfo = @typeInfo(StructType).@"struct";
@@ -2615,7 +2612,7 @@ test "sqlite: read in an anonymous struct" {
     try testing.expectEqualStrings(exp.name, mem.sliceTo(&row.?.name_2, 0xAD));
     try testing.expectEqual(exp.age, row.?.age);
     try testing.expect(row.?.is_id);
-    try testing.expectEqual(exp.weight, @as(f32, @floatCast( row.?.weight)));
+    try testing.expectEqual(exp.weight, @as(f32, @floatCast(row.?.weight)));
 }
 
 test "sqlite: read in a Text struct" {
