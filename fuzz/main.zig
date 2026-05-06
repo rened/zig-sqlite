@@ -11,8 +11,12 @@ pub fn zigMain() !void {
     const allocator = gpa.allocator();
 
     // Read the data from stdin
-    const stdin = std.io.getStdIn();
-    const data = try stdin.readToEndAlloc(allocator, std.math.maxInt(usize));
+    var io_threaded = std.Io.Threaded.init(allocator, .{});
+    defer io_threaded.deinit();
+    const io = io_threaded.io();
+    var stdin_buf: [4096]u8 = undefined;
+    var file_reader = std.Io.File.stdin().reader(io, &stdin_buf);
+    const data = try file_reader.interface.allocRemaining(allocator, .unlimited);
     defer allocator.free(data);
 
     var db = try sqlite.Db.init(.{

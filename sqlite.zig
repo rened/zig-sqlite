@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const build_options = @import("build_options");
 const debug = std.debug;
 const heap = std.heap;
-const io = std.io;
 const mem = std.mem;
 const testing = std.testing;
 
@@ -78,6 +77,9 @@ pub const Blob = struct {
     offset: c_int = 0,
     size: c_int = 0,
 
+    reader_impl: std.Io.Reader = undefined,
+    writer_impl: std.Io.Writer = undefined,
+
     /// close closes the blob.
     pub fn close(self: *Self) Error!void {
         const result = c.sqlite3_blob_close(self.handle);
@@ -86,11 +88,39 @@ pub const Blob = struct {
         }
     }
 
-    pub const Reader = io.Reader(*Self, errors.Error, read);
+    /// reader returns a std.Io.Reader.
+    pub fn reader(self: *Self) *std.Io.Reader {
+        self.reader_impl = .{
+            .buffer = &.{},
+            .seek = 0,
+            .end = 0,
+            .vtable = &reader_vtable,
+        };
+        return &self.reader_impl;
+    }
 
-    /// reader returns a io.Reader.
-    pub fn reader(self: *Self) Reader {
-        return .{ .context = self };
+    fn blobStream(r: *std.Io.Reader, w: *std.Io.Writer, limit: std.Io.Limit) std.Io.Reader.StreamError!usize {
+        const self_ptr: *Blob = @fieldParentPtr("reader_impl", r);
+        const buf = limit.slice(w.unusedCapacitySlice());
+        if (buf.len == 0) return 0;
+        const n = self_ptr.read(buf) catch return error.ReadFailed;
+        if (n == 0) return error.EndOfStream;
+        w.advance(n);
+        return n;
+    }
+
+    fn blobDiscard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
+        const self_ptr: *Blob = @fieldParentPtr("reader_impl", r);
+        var buf: [4096]u8 = undefined;
+        var remaining = @intFromEnum(limit);
+        var total: usize = 0;
+        while (remaining > 0) {
+            const n = self_ptr.read(buf[0..@min(buf.len, remaining)]) catch return error.ReadFailed;
+            if (n == 0) break;
+            total += n;
+            remaining -= n;
+        }
+        return total;
     }
 
     fn read(self: *Self, buffer: []u8) Error!usize {
@@ -118,11 +148,33 @@ pub const Blob = struct {
         return tmp_buffer.len;
     }
 
-    pub const Writer = io.Writer(*Self, Error, write);
+    /// writer returns a std.Io.Writer.
+    pub fn writer(self: *Self) *std.Io.Writer {
+        self.writer_impl = .{
+            .buffer = &.{},
+            .end = 0,
+            .vtable = &writer_vtable,
+        };
+        return &self.writer_impl;
+    }
 
-    /// writer returns a io.Writer.
-    pub fn writer(self: *Self) Writer {
-        return .{ .context = self };
+    fn blobDrain(w: *std.Io.Writer, data: []const []const u8, splat: usize) std.Io.Writer.Error!usize {
+        const self_ptr: *Blob = @fieldParentPtr("writer_impl", w);
+        if (w.end > 0) {
+            _ = self_ptr.write(w.buffer[0..w.end]) catch return error.WriteFailed;
+            w.end = 0;
+        }
+        const total = std.Io.Writer.countSplat(data, splat);
+        var remaining = total;
+        var i: usize = 0;
+        while (remaining > 0) {
+            const slice = if (i < data.len - 1) data[i] else data[data.len - 1];
+            const n = @min(slice.len, remaining);
+            _ = self_ptr.write(slice[0..n]) catch return error.WriteFailed;
+            remaining -= n;
+            if (i < data.len - 1) i += 1;
+        }
+        return total;
     }
 
     fn write(self: *Self, data: []const u8) Error!usize {
@@ -197,6 +249,17 @@ pub const Blob = struct {
     }
 };
 
+const reader_vtable: std.Io.Reader.VTable = .{
+    .stream = Blob.blobStream,
+    .discard = Blob.blobDiscard,
+};
+
+const writer_vtable: std.Io.Writer.VTable = .{
+    .drain = Blob.blobDrain,
+    .flush = std.Io.Writer.noopFlush,
+    .rebase = std.Io.Writer.failingRebase,
+};
+
 /// ThreadingMode controls the threading mode used by SQLite.
 ///
 /// See https://sqlite.org/threadsafe.html
@@ -215,14 +278,14 @@ pub const Diagnostics = struct {
     message: []const u8 = "",
     err: ?DetailedError = null,
 
-    pub fn format(self: @This(), comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
+    pub fn format(self: @This(), writer: anytype) !void {
         if (self.err) |err| {
             if (self.message.len > 0) {
-                _ = try writer.print("{{message: {s}, detailed error: {s}}}", .{ self.message, err });
+                _ = try writer.print("{{message: {s}, detailed error: {}}}", .{ self.message, err });
                 return;
             }
 
-            _ = try err.format(fmt, options, writer);
+            _ = try err.format(writer);
             return;
         }
 
@@ -525,7 +588,7 @@ pub const Db = struct {
 
     /// openBlob opens a blob for incremental i/o.
     ///
-    /// Incremental i/o enables writing and reading data using a std.io.Writer and std.io.Reader:
+    /// Incremental i/o enables writing and reading data using a std.Io.Writer and std.Io.Reader:
     ///  * the writer type wraps sqlite3_blob_write, see https://sqlite.org/c3ref/blob_write.html
     ///  * the reader type wraps sqlite3_blob_read, see https://sqlite.org/c3ref/blob_read.html
     ///
@@ -533,19 +596,19 @@ pub const Db = struct {
     /// * the blob must exist before writing; you must use INSERT to create one first (either with data or using a placeholder with ZeroBlob).
     /// * the blob is not extensible, if you want to change the blob size you must use an UPDATE statement.
     ///
-    /// You can get a std.io.Writer to write data to the blob:
+    /// You can get a std.Io.Writer to write data to the blob:
     ///
     ///     var blob = try db.openBlob(.main, "mytable", "mycolumn", 1, .{ .write = true });
     ///     var blob_writer = blob.writer();
     ///
     ///     try blob_writer.writeAll(my_data);
     ///
-    /// You can get a std.io.Reader to read the blob data:
+    /// You can get a std.Io.Reader to read the blob data:
     ///
     ///     var blob = try db.openBlob(.main, "mytable", "mycolumn", 1, .{});
     ///     var blob_reader = blob.reader();
     ///
-    ///     const data = try blob_reader.readAlloc(allocator);
+    ///     const data = try blob_reader.allocRemaining(allocator, .unlimited);
     ///
     /// See https://sqlite.org/c3ref/blob_open.html for more details on incremental i/o.
     ///
@@ -1993,12 +2056,12 @@ pub const DynamicStatement = struct {
     pub fn all(self: *Self, comptime Type: type, allocator: mem.Allocator, options: QueryOptions, values: anytype) ![]Type {
         var iter = try self.iterator(Type, values);
 
-        var rows = std.ArrayList(Type).init(allocator);
+        var rows = std.ArrayList(Type).empty;
         while (try iter.nextAlloc(allocator, options)) |row| {
-            try rows.append(row);
+            try rows.append(allocator, row);
         }
 
-        return rows.toOwnedSlice();
+        return rows.toOwnedSlice(allocator);
     }
 };
 
@@ -2273,12 +2336,12 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: anytype) type 
         pub fn all(self: *Self, comptime Type: type, allocator: mem.Allocator, options: QueryOptions, values: anytype) ![]Type {
             var iter = try self.iteratorAlloc(Type, allocator, values);
 
-            var rows = std.ArrayList(Type).init(allocator);
+            var rows = std.ArrayList(Type).empty;
             while (try iter.nextAlloc(allocator, options)) |row| {
-                try rows.append(row);
+                try rows.append(allocator, row);
             }
 
-            return rows.toOwnedSlice();
+            return rows.toOwnedSlice(allocator);
         }
     };
 }
@@ -3036,13 +3099,13 @@ test "sqlite: statement iterator" {
     var stmt = try db.prepare("INSERT INTO user(name, id, age, weight, favorite_color) VALUES(?{[]const u8}, ?{usize}, ?{usize}, ?{f32}, ?{[]const u8})");
     defer stmt.deinit();
 
-    var expected_rows = std.ArrayList(TestUser).init(allocator);
+    var expected_rows = std.ArrayList(TestUser).empty;
     var i: usize = 0;
     while (i < 20) : (i += 1) {
         const name = try std.fmt.allocPrint(allocator, "Vincent {d}", .{i});
         const user = TestUser{ .id = i, .name = name, .age = i + 200, .weight = @as(f32, @floatFromInt(i + 200)), .favorite_color = .indigo };
 
-        try expected_rows.append(user);
+        try expected_rows.append(allocator, user);
 
         stmt.reset();
         try stmt.exec(.{}, user);
@@ -3063,9 +3126,9 @@ test "sqlite: statement iterator" {
 
         var iter = try stmt2.iterator(RowType, .{});
 
-        var rows = std.ArrayList(RowType).init(allocator);
+        var rows = std.ArrayList(RowType).empty;
         while (try iter.next(.{})) |row| {
-            try rows.append(row);
+            try rows.append(allocator, row);
         }
 
         // Check the data
@@ -3090,9 +3153,9 @@ test "sqlite: statement iterator" {
 
         var iter = try stmt2.iterator(RowType, .{});
 
-        var rows = std.ArrayList(RowType).init(allocator);
+        var rows = std.ArrayList(RowType).empty;
         while (try iter.nextAlloc(allocator, .{})) |row| {
-            try rows.append(row);
+            try rows.append(allocator, row);
         }
 
         // Check the data
@@ -3518,10 +3581,10 @@ test "sqlite: bind runtime slice" {
     const allocator = arena.allocator();
 
     // creating array list on heap so that it's deemed runtime size
-    var list = std.ArrayList([]const u8).init(allocator);
-    defer list.deinit();
-    try list.append("this is some data");
-    const args = list.toOwnedSlice();
+    var list = std.ArrayList([]const u8).empty;
+    defer list.deinit(allocator);
+    try list.append(allocator, "this is some data");
+    const args = list.toOwnedSlice(allocator);
 
     var db = try getTestDb();
     defer db.deinit();
@@ -3935,8 +3998,8 @@ test "sqlite: empty slice" {
     defer db.deinit();
     try addTestData(&db);
 
-    var list = std.ArrayList(u8).init(arena.allocator());
-    const ptr = list.toOwnedSlice();
+    var list = std.ArrayList(u8).empty;
+    const ptr = list.toOwnedSlice(arena.allocator());
 
     try db.exec("INSERT INTO article(author_id, data) VALUES(?, ?)", .{}, .{ 1, ptr });
 
