@@ -1713,12 +1713,26 @@ pub const DynamicStatement = struct {
         }
     }
 
+    fn bindNullIfEmpty(options: anytype) bool {
+        const Options = @TypeOf(options);
+        return switch (@typeInfo(Options)) {
+            .@"struct" => if (@hasField(Options, "null_if_empty")) options.null_if_empty else false,
+            else => false,
+        };
+    }
+
+    fn bindNull(self: *Self, column: c_int) !void {
+        const result = c.sqlite3_bind_null(self.stmt, column);
+        return convertResultToError(result);
+    }
+
     fn bindField(self: *Self, comptime FieldType: type, options: anytype, comptime field_name: []const u8, i: c_int, field: FieldType) !void {
         const field_type_info = @typeInfo(FieldType);
         const column = i + 1;
 
         switch (FieldType) {
             Text => {
+                if (bindNullIfEmpty(options) and field.data.len == 0) return self.bindNull(column);
                 const result = c.sqlite3_bind_text(self.stmt, column, field.data.ptr, @as(c_int, @intCast(field.data.len)), null);
                 return convertResultToError(result);
             },
@@ -1749,6 +1763,7 @@ pub const DynamicStatement = struct {
                     },
                     .slice => switch (ptr.child) {
                         u8 => {
+                            if (bindNullIfEmpty(options) and field.len == 0) return self.bindNull(column);
                             const result = c.sqlite3_bind_text(self.stmt, column, field.ptr, @as(c_int, @intCast(field.len)), null);
                             return convertResultToError(result);
                         },
@@ -1760,6 +1775,7 @@ pub const DynamicStatement = struct {
                     u8 => {
                         const data: []const u8 = field[0..field.len];
 
+                        if (bindNullIfEmpty(options) and data.len == 0) return self.bindNull(column);
                         const result = c.sqlite3_bind_text(self.stmt, column, data.ptr, @as(c_int, @intCast(data.len)), null);
                         return convertResultToError(result);
                     },
@@ -2190,6 +2206,30 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: anytype) type 
         /// execAlloc is like `exec` but can allocate memory.
         pub fn execAlloc(self: *Self, allocator: mem.Allocator, options: QueryOptions, values: anytype) !void {
             try self.bind(.{ .allocator = allocator }, values);
+
+            var dummy_diags = Diagnostics{};
+            var diags = options.diags orelse &dummy_diags;
+
+            const result = c.sqlite3_step(self.dynamic().stmt);
+            switch (result) {
+                c.SQLITE_DONE => {},
+                else => {
+                    diags.err = getLastDetailedErrorFromDb(self.dynamic().db);
+                    return errors.errorFromResultCode(result);
+                },
+            }
+        }
+
+        /// bindValuesLegacyAlloc is like bind, but preserves MVA's historical
+        /// sqlwithvalues behavior where empty strings were stored as NULL.
+        pub fn bindValuesLegacyAlloc(self: *Self, allocator: mem.Allocator, values: anytype) !void {
+            try self.bind(.{ .allocator = allocator, .null_if_empty = true }, values);
+        }
+
+        /// execLegacyAlloc is like execAlloc, but preserves MVA's historical
+        /// sqlwithvalues behavior where empty strings were stored as NULL.
+        pub fn execLegacyAlloc(self: *Self, allocator: mem.Allocator, options: QueryOptions, values: anytype) !void {
+            try self.bindValuesLegacyAlloc(allocator, values);
 
             var dummy_diags = Diagnostics{};
             var diags = options.diags orelse &dummy_diags;
