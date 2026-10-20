@@ -1524,12 +1524,11 @@ pub fn Iterator(comptime Type: type) type {
 
             const info = @typeInfo(Type).@"struct";
             inline for (info.field_names, info.field_types, 0..) |name, Field, _i| {
-                const field = .{ .name = name, .type = Field };
                 const i = @as(usize, _i);
 
-                const ret = try self.readField(field.type, options, i);
+                const ret = try self.readField(Field, options, i);
 
-                @field(value, field.name) = ret;
+                @field(value, name) = ret;
             }
 
             return value;
@@ -1798,16 +1797,15 @@ pub const DynamicStatement = struct {
                 .@"union" => |info| {
                     if (info.tag_type) |UnionTagType| {
                         inline for (info.field_names, info.field_types) |name, Field| {
-                            const u_field = .{ .name = name, .type = Field };
                             // This wasn't entirely obvious when I saw code like this elsewhere, it works because of type coercion.
                             // See https://ziglang.org/documentation/master/#Type-Coercion-unions-and-enums
                             const field_tag: std.meta.Tag(FieldType) = field;
-                            const this_tag: std.meta.Tag(FieldType) = @field(UnionTagType, u_field.name);
+                            const this_tag: std.meta.Tag(FieldType) = @field(UnionTagType, name);
 
                             if (field_tag == this_tag) {
-                                const field_value = @field(field, u_field.name);
+                                const field_value = @field(field, name);
 
-                                try self.bindField(u_field.type, options, u_field.name, i, field_value);
+                                try self.bindField(Field, options, name, i, field_value);
                             }
                         }
                     } else {
@@ -1856,14 +1854,13 @@ pub const DynamicStatement = struct {
         switch (@typeInfo(Type)) {
             .@"struct" => |StructTypeInfo| {
                 inline for (StructTypeInfo.field_names, StructTypeInfo.field_types, 0..) |name, Field, struct_field_i| {
-                    const struct_field = .{ .name = name, .type = Field };
-                    const field_value = @field(values, struct_field.name);
+                    const field_value = @field(values, name);
 
-                    const i = sqlite3BindParameterIndex(self.stmt, struct_field.name);
+                    const i = sqlite3BindParameterIndex(self.stmt, name);
                     if (i >= 0) {
-                        try self.bindField(struct_field.type, options, struct_field.name, i, field_value);
+                        try self.bindField(Field, options, name, i, field_value);
                     } else {
-                        try self.bindField(struct_field.type, options, struct_field.name, struct_field_i, field_value);
+                        try self.bindField(Field, options, name, struct_field_i, field_value);
                     }
                 }
             },
