@@ -112,7 +112,7 @@ pub const Blob = struct {
     fn blobDiscard(r: *std.Io.Reader, limit: std.Io.Limit) std.Io.Reader.Error!usize {
         const self_ptr: *Blob = @fieldParentPtr("reader_impl", r);
         var buf: [4096]u8 = undefined;
-        var remaining = @intFromEnum(limit);
+        var remaining = @backingInt(limit);
         var total: usize = 0;
         while (remaining > 0) {
             const n = self_ptr.read(buf[0..@min(buf.len, remaining)]) catch return error.ReadFailed;
@@ -1191,13 +1191,13 @@ pub fn Iterator(comptime Type: type) type {
 
                     if (@typeInfo(Type.BaseType) == .Int) {
                         const inner_value = try self.readField(Type.BaseType, options, 0);
-                        return @as(Type, @intFromEnum(@as(TI.tag_type, @intCast(inner_value))));
+                        return @as(Type, @backingInt(@as(TI.tag_type, @intCast(inner_value))));
                     }
 
                     @compileError("enum column " ++ @typeName(Type) ++ " must have a BaseType of either string or int");
                 },
                 .@"struct" => {
-                    std.debug.assert(columns == TypeInfo.@"struct".fields.len);
+                    std.debug.assert(columns == TypeInfo.@"struct".field_names.len);
                     return try self.readStruct(options);
                 },
                 else => @compileError("cannot read into type " ++ @typeName(Type) ++ " ; if dynamic memory allocation is required use nextAlloc or oneAlloc"),
@@ -1275,12 +1275,12 @@ pub fn Iterator(comptime Type: type) type {
                         return std.meta.stringToEnum(Type, inner_value) orelse unreachable;
                     }
                     if (@typeInfo(Type.BaseType) == .Int) {
-                        return @as(Type, @intFromEnum(@as(TI.tag_type, @intCast(inner_value))));
+                        return @as(Type, @backingInt(@as(TI.tag_type, @intCast(inner_value))));
                     }
                     @compileError("enum column " ++ @typeName(Type) ++ " must have a BaseType of either string or int");
                 },
                 .@"struct" => {
-                    std.debug.assert(columns == TypeInfo.@"struct".fields.len);
+                    std.debug.assert(columns == TypeInfo.@"struct".field_names.len);
                     return try self.readStruct(.{
                         .allocator = allocator,
                     });
@@ -1522,7 +1522,9 @@ pub fn Iterator(comptime Type: type) type {
 
             var value: Type = undefined;
 
-            inline for (@typeInfo(Type).@"struct".fields, 0..) |field, _i| {
+            const info = @typeInfo(Type).@"struct";
+            inline for (info.field_names, info.field_types, 0..) |name, Field, _i| {
+                const field = .{ .name = name, .type = Field };
                 const i = @as(usize, _i);
 
                 const ret = try self.readField(field.type, options, i);
@@ -1576,7 +1578,7 @@ pub fn Iterator(comptime Type: type) type {
                             return std.meta.stringToEnum(FieldType, inner_value) orelse unreachable;
                         }
                         if (@typeInfo(FieldType.BaseType) == .Int) {
-                            return @as(FieldType, @intFromEnum(@as(TI.tag_type, @intCast(inner_value))));
+                            return @as(FieldType, @backingInt(@as(TI.tag_type, @intCast(inner_value))));
                         }
                         @compileError("enum column " ++ @typeName(FieldType) ++ " must have a BaseType of either string or int");
                     },
@@ -1779,7 +1781,7 @@ pub const DynamicStatement = struct {
                     if (comptime std.meta.trait.isZigString(FieldType.BaseType)) {
                         try self.bindField(FieldType.BaseType, options, field_name, i, @tagName(field));
                     } else if (@typeInfo(FieldType.BaseType) == .Int) {
-                        try self.bindField(FieldType.BaseType, options, field_name, i, @intFromEnum(field));
+                        try self.bindField(FieldType.BaseType, options, field_name, i, @backingInt(field));
                     } else {
                         @compileError("enum column " ++ @typeName(FieldType) ++ " must have a BaseType of either string or int to bind");
                     }
@@ -1795,7 +1797,8 @@ pub const DynamicStatement = struct {
                 },
                 .@"union" => |info| {
                     if (info.tag_type) |UnionTagType| {
-                        inline for (info.fields) |u_field| {
+                        inline for (info.field_names, info.field_types) |name, Field| {
+                            const u_field = .{ .name = name, .type = Field };
                             // This wasn't entirely obvious when I saw code like this elsewhere, it works because of type coercion.
                             // See https://ziglang.org/documentation/master/#Type-Coercion-unions-and-enums
                             const field_tag: std.meta.Tag(FieldType) = field;
@@ -1852,7 +1855,8 @@ pub const DynamicStatement = struct {
 
         switch (@typeInfo(Type)) {
             .@"struct" => |StructTypeInfo| {
-                inline for (StructTypeInfo.fields, 0..) |struct_field, struct_field_i| {
+                inline for (StructTypeInfo.field_names, StructTypeInfo.field_types, 0..) |name, Field, struct_field_i| {
+                    const struct_field = .{ .name = name, .type = Field };
                     const field_value = @field(values, struct_field.name);
 
                     const i = sqlite3BindParameterIndex(self.stmt, struct_field.name);
@@ -2154,23 +2158,23 @@ pub fn Statement(comptime opts: StatementOptions, comptime query: anytype) type 
 
             const StructTypeInfo = @typeInfo(StructType).@"struct";
 
-            if (comptime query.nb_bind_markers != StructTypeInfo.fields.len) {
+            if (comptime query.nb_bind_markers != StructTypeInfo.field_names.len) {
                 @compileError(std.fmt.comptimePrint("expected {d} bind parameters but got {d}", .{
                     query.nb_bind_markers,
-                    StructTypeInfo.fields.len,
+                    StructTypeInfo.field_names.len,
                 }));
             }
 
-            inline for (StructTypeInfo.fields, 0..) |struct_field, _i| {
+            inline for (StructTypeInfo.field_types, 0..) |Field, _i| {
                 const bind_marker = query.bind_markers[_i];
                 if (bind_marker.typed) |typ| {
-                    const FieldTypeInfo = @typeInfo(struct_field.type);
+                    const FieldTypeInfo = @typeInfo(Field);
                     switch (FieldTypeInfo) {
-                        .@"struct", .@"enum", .Union => comptime assertMarkerType(
-                            if (@hasDecl(struct_field.type, "BaseType")) struct_field.type.BaseType else struct_field.type,
+                        .@"struct", .@"enum", .@"union" => comptime assertMarkerType(
+                            if (@hasDecl(Field, "BaseType")) Field.BaseType else Field,
                             typ,
                         ),
-                        else => comptime assertMarkerType(struct_field.type, typ),
+                        else => comptime assertMarkerType(Field, typ),
                     }
                 }
             }
@@ -3208,7 +3212,7 @@ test "sqlite: blob open, reopen" {
         var blob_reader = blob.reader();
         const data = try blob_reader.readAllAlloc(allocator, 8192);
 
-        try testing.expectEqualSlices(u8, blob_data1 ** 2, data);
+        try testing.expectEqualSlices(u8, blob_data1 ++ blob_data1, data);
     }
 
     // Reopen the blob in the second row
@@ -3225,7 +3229,7 @@ test "sqlite: blob open, reopen" {
         var blob_reader = blob.reader();
         const data = try blob_reader.readAllAlloc(allocator, 8192);
 
-        try testing.expectEqualSlices(u8, blob_data2 ** 2, data);
+        try testing.expectEqualSlices(u8, blob_data2 ++ blob_data2, data);
     }
 
     try blob.close();
@@ -3519,7 +3523,7 @@ const MyData = struct {
     pub fn readField(alloc: mem.Allocator, value: BaseType) !MyData {
         _ = alloc;
 
-        var result = [_]u8{0} ** 16;
+        var result: [16]u8 = @splat(0);
         var i: usize = 0;
         while (i < result.len) : (i += 1) {
             const j = i * 2;

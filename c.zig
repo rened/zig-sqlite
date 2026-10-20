@@ -1,6 +1,4 @@
-pub const c = @cImport({
-    @cInclude("sqlite3-mva.h");
-});
+pub const c = @import("csqlite");
 
 // versionGreaterThanOrEqualTo returns true if the SQLite version is >= to the major.minor.patch provided.
 pub fn versionGreaterThanOrEqualTo(major: u8, minor: u8, patch: u8) bool {
